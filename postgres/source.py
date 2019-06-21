@@ -70,6 +70,8 @@ class Postgres(panoply.DataSource):
         self.loaded = 0
         self.saved_state = self.source.get('state', {})
         self.current_keys = None
+        self.inckey = self.source.get('inckey', '')
+        self.incval = self.source.get('incval', '')
 
         self.index = self.saved_state.get('last_index', 0)
 
@@ -112,7 +114,11 @@ class Postgres(panoply.DataSource):
                 )[:1]
 
             self.current_keys = key_strategy(self.current_keys)
-            q = get_query(schema, table, self.source, self.current_keys, state)
+
+            max_value = self.get_max_value(schema, table, self.inckey)
+            query_opts = self.get_query_opts(schema, table, state, max_value)
+
+            q = get_query(**query_opts)
             self.execute('DECLARE cur CURSOR FOR {}'.format(q))
 
         # read n(=BATCH_SIZE) records from the table
@@ -179,6 +185,32 @@ class Postgres(panoply.DataSource):
         self.conn = None
         self.cursor = None
 
+    def get_query_opts(self, schema, table, state, max_value=None):
+        query_opts = {
+            'schema': schema,
+            'table': table,
+            'inckey': self.inckey,
+            'incval': self.incval,
+            'keys': self.current_keys,
+            'state': state,
+            'max_value': max_value
+        }
+        return query_opts
+
+    def get_max_value(self, schema, table, column):
+        if not column:
+            return None
+
+        query = 'SELECT MAX("{}") FROM "{}"."{}"'.format(
+            column,
+            schema,
+            table
+        )
+
+        self.execute(query)
+
+        return self.cursor.fetchall()[0]['max']
+
     def get_tables(self):
         """get the list of tables from the source"""
         query = """
@@ -243,13 +275,11 @@ def connect(source):
     return conn, cur
 
 
-def get_query(schema, table, src, keys, state=None):
+def get_query(schema, table, inckey, incval, keys, max_value,state=None):
     """return a SELECT query using properties from the source"""
     offset = ''
     where = ''
     orderby = ''
-    inckey = src.get('inckey')
-    incval = src.get('incval')
     if keys:
         keys = [key.get('attname') for key in keys]
         if inckey and inckey not in keys:
@@ -272,7 +302,15 @@ def get_query(schema, table, src, keys, state=None):
     if (inckey and incval) and (inckey not in where):
         if where:
             where = '{} AND '.format(where)
-        where = "{}{} >= '{}'".format(where, inckey, incval)
+
+        inc_clause = "{} >= '{}'".format(inckey, incval)
+        if max_value:
+            inc_clause = "({} AND {} <= {})".format(
+                inc_clause,
+                inckey,
+                max_value
+            )
+        where = "{}{}".format(where, inc_clause)
 
     if where:
         where = ' WHERE {}'.format(where)

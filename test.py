@@ -193,7 +193,6 @@ class TestPostgres(unittest.TestCase):
     def test_read_end_stream(self, mock_connect, mock_execute, mock_metadata):
         """reads the entire table from the database and validates that the
         stream returns None to indicate the end"""
-        # TODO make it read two tables
         tables = [
             {'value': 'public.table1'},
             {'value': 'public.table2'},
